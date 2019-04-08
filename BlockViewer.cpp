@@ -1,11 +1,12 @@
 /*
  *
- *      Collapse and Uncollapse code blocks in IDA pseudocode view.
+ *      Shrink code block.
  *      Edit by Jinhao
  *      2017.3.3
  *
  */
 
+#include <dbg.hpp>
 #include <hexrays.hpp>
 
  // Hex-Rays API pointer
@@ -108,7 +109,13 @@ struct ida_local block_finder_t : public ctree_visitor_t
 	}
 };
 
-bool hasWord(TCustomControl *v)
+bool hasWord(
+#ifdef __IDA7__
+    TWidget *v
+#else
+    TCustomControl *v
+#endif
+)
 {
 	// query the cursor position
 	int x, y;
@@ -116,11 +123,19 @@ bool hasWord(TCustomControl *v)
 		return false;
 
 	// query the line at the cursor
-	char buf[MAXSTR];
-	const char *line = get_custom_viewer_curline(v, false);
-	tag_remove(line, buf, sizeof(buf));
-	if (x >= (int)strlen(buf))
-		return false;
+#ifdef __IDA7__
+    qstring buf;
+    const char *line = get_custom_viewer_curline(v, false);
+    tag_remove(&buf, line);
+    if (x >= buf.length())
+        return false;
+#else
+    char buf[MAXSTR];
+    const char *line = get_custom_viewer_curline(v, false);
+    tag_remove(line, buf, MAXSTR);
+    if (x >= (int)strlen(buf))
+        return false;
+#endif	
 
 	return true;
 }
@@ -180,7 +195,12 @@ static int idaapi callback(void *, hexrays_event_t event, va_list va)
 		break;
 	case hxe_flowchart:
 		{
-			vdui_t *vu = get_tform_vdui(get_current_tform());
+#ifdef __IDA7__
+            vdui_t *vu = get_widget_vdui(get_current_viewer());
+#else
+            vdui_t *vu = get_tform_vdui(get_current_tform());
+#endif
+			
 			if (vu)
 			{
 				GetPseudo(vu)->ExpandAll();
@@ -194,9 +214,13 @@ static int idaapi callback(void *, hexrays_event_t event, va_list va)
 	return 0;
 }
 
-static int idaapi ExpandAllBeforeChange(void *, int code, va_list va)
+static ssize_t idaapi ExpandAllBeforeChange(void *, int code, va_list va)
 {
-	vdui_t *vu = get_tform_vdui(get_current_tform());
+#ifdef __IDA7__
+    vdui_t *vu = get_widget_vdui(get_current_viewer());
+#else
+    vdui_t *vu = get_tform_vdui(get_current_tform());
+#endif
 	if (vu &&(code==idb_event::renaming_struc_member || code == idb_event::changing_struc_member ||
 		code == idb_event::changing_cmt || code == idb_event::changing_op_ti))
 	{
@@ -204,6 +228,24 @@ static int idaapi ExpandAllBeforeChange(void *, int code, va_list va)
 	}
 	return 0;
 }
+
+#ifndef __IDA7__
+static ssize_t idaapi DisableBeforeDebug(void *, int code, va_list va)
+{
+    if (code == dbg_process_start || code == dbg_process_attach)
+    {
+        remove_hexrays_callback(callback, NULL);
+        unhook_from_notification_point(HT_IDB, ExpandAllBeforeChange, NULL);
+    }
+    else if (code == dbg_process_exit || code == dbg_process_detach)
+    {
+        install_hexrays_callback(callback, NULL);
+        hook_to_notification_point(HT_IDB, ExpandAllBeforeChange, NULL);
+    }
+    return 0;
+}
+#endif
+
 
 //--------------------------------------------------------------------------
 // Initialize the plugin.
@@ -214,11 +256,16 @@ int idaapi init(void)
 
 	install_hexrays_callback(callback, NULL);
 	hook_to_notification_point(HT_IDB, ExpandAllBeforeChange, NULL);
+
+#ifndef __IDA7__
+    hook_to_notification_point(HT_DBG, DisableBeforeDebug, NULL);
+#endif
+    
 	hint = new cexpr_t(cot_str, NULL);
 	hint->string = "{...} // double click right area to expand.";
 	inited = true;
 
-	msg("CodeViewer plugin by jhftss loaded.\n");
+	msg("BlockViewer plugin by jhftss loaded.\n");
 	return PLUGIN_KEEP;
 }
 
@@ -234,7 +281,11 @@ void idaapi term(void)
 			delete *iter;
 		}
 		pseuVec.clear();
-		
+
+#ifndef __IDA7__
+        unhook_from_notification_point(HT_DBG, DisableBeforeDebug, NULL);
+#endif
+
 		remove_hexrays_callback(callback, NULL);
 		unhook_from_notification_point(HT_IDB, ExpandAllBeforeChange, NULL);
 		term_hexrays_plugin();
@@ -242,13 +293,47 @@ void idaapi term(void)
 }
 
 //--------------------------------------------------------------------------
+#ifdef __IDA7__
+bool idaapi run(size_t)
+#else
 void idaapi run(int)
+#endif
 {
 	func_t *pfn = get_func(get_screen_ea());
-	if (pfn)
-	{
-		jumpto(pfn->startEA);
-	}
+    if (pfn)
+    {
+#ifdef __IDA7__
+        int code = ask_buttons("~S~tart", "~E~nd", "~C~ancel", -1, "Jump to function start or end ?");
+        switch (code)
+        {
+        case -1:    // cancel
+            break;
+        case 0:     // end
+            jumpto(pfn->end_ea);
+            break;
+        case 1:     // start
+            jumpto(pfn->start_ea);
+            break;
+        }
+#else
+        int code = askbuttons_c("~S~tart", "~E~nd", "~C~ancel", -1, "Jump to function start or end ?");
+        switch (code)
+        {
+        case -1:    // cancel
+            break;
+        case 0:     // end
+            jumpto(pfn->endEA);
+            break;
+        case 1:     // start
+            jumpto(pfn->startEA);
+            break;
+        }
+#endif        
+    }
+
+#ifdef __IDA7__
+    return true;
+#endif	
 }
 
 plugin_t PLUGIN =
