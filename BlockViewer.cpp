@@ -11,8 +11,9 @@
 
  // Hex-Rays API pointer
 hexdsp_t *hexdsp = NULL;
+
 cexpr_t *hint = NULL;
-static bool inited = false;
+
 
 struct Block
 {
@@ -109,13 +110,7 @@ struct ida_local block_finder_t : public ctree_visitor_t
 	}
 };
 
-bool hasWord(
-#ifdef __IDA7__
-    TWidget *v
-#else
-    TCustomControl *v
-#endif
-)
+bool hasWord(TWidget *v)
 {
 	// query the cursor position
 	int x, y;
@@ -123,26 +118,18 @@ bool hasWord(
 		return false;
 
 	// query the line at the cursor
-#ifdef __IDA7__
     qstring buf;
     const char *line = get_custom_viewer_curline(v, false);
     tag_remove(&buf, line);
     if (x >= buf.length())
         return false;
-#else
-    char buf[MAXSTR];
-    const char *line = get_custom_viewer_curline(v, false);
-    tag_remove(line, buf, MAXSTR);
-    if (x >= (int)strlen(buf))
-        return false;
-#endif	
 
-	return true;
+    return true;
 }
 
 //--------------------------------------------------------------------------
 // This callback handles various hexrays events.
-static int idaapi callback(void *, hexrays_event_t event, va_list va)
+ssize_t idaapi callback(void *, hexrays_event_t event, va_list va)
 {
 	switch (event)
 	{
@@ -195,12 +182,7 @@ static int idaapi callback(void *, hexrays_event_t event, va_list va)
 		break;
 	case hxe_flowchart:
 		{
-#ifdef __IDA7__
             vdui_t *vu = get_widget_vdui(get_current_viewer());
-#else
-            vdui_t *vu = get_tform_vdui(get_current_tform());
-#endif
-			
 			if (vu)
 			{
 				GetPseudo(vu)->ExpandAll();
@@ -216,11 +198,7 @@ static int idaapi callback(void *, hexrays_event_t event, va_list va)
 
 static ssize_t idaapi ExpandAllBeforeChange(void *, int code, va_list va)
 {
-#ifdef __IDA7__
     vdui_t *vu = get_widget_vdui(get_current_viewer());
-#else
-    vdui_t *vu = get_tform_vdui(get_current_tform());
-#endif
 	if (vu &&(code==idb_event::renaming_struc_member || code == idb_event::changing_struc_member ||
 		code == idb_event::changing_cmt || code == idb_event::changing_op_ti))
 	{
@@ -229,7 +207,6 @@ static ssize_t idaapi ExpandAllBeforeChange(void *, int code, va_list va)
 	return 0;
 }
 
-#ifndef __IDA7__
 static ssize_t idaapi DisableBeforeDebug(void *, int code, va_list va)
 {
     if (code == dbg_process_start || code == dbg_process_attach)
@@ -244,35 +221,14 @@ static ssize_t idaapi DisableBeforeDebug(void *, int code, va_list va)
     }
     return 0;
 }
-#endif
 
-
-//--------------------------------------------------------------------------
-// Initialize the plugin.
-int idaapi init(void)
+struct plugin_ctx_t : public plugmod_t
 {
-	if (!init_hexrays_plugin())
-		return PLUGIN_SKIP; // no decompiler
+  bool inited = true;
 
-	install_hexrays_callback(callback, NULL);
-	hook_to_notification_point(HT_IDB, ExpandAllBeforeChange, NULL);
-
-#ifndef __IDA7__
-    hook_to_notification_point(HT_DBG, DisableBeforeDebug, NULL);
-#endif
-    
-	hint = new cexpr_t(cot_str, NULL);
-	hint->string = "{...} // double click right area to expand.";
-	inited = true;
-
-	msg("BlockViewer plugin by jhftss loaded.\n");
-	return PLUGIN_KEEP;
-}
-
-//--------------------------------------------------------------------------
-void idaapi term(void)
-{
-	if (inited)
+  ~plugin_ctx_t()
+  {
+    if (inited)
 	{
 		hint->string = NULL;
 		delete hint;
@@ -282,27 +238,41 @@ void idaapi term(void)
 		}
 		pseuVec.clear();
 
-#ifndef __IDA7__
-        unhook_from_notification_point(HT_DBG, DisableBeforeDebug, NULL);
-#endif
-
-		remove_hexrays_callback(callback, NULL);
+		unhook_from_notification_point(HT_DBG, DisableBeforeDebug, NULL);
+        
+        remove_hexrays_callback(callback, NULL);
 		unhook_from_notification_point(HT_IDB, ExpandAllBeforeChange, NULL);
+
 		term_hexrays_plugin();
 	}
+  }
+  virtual bool idaapi run(size_t) override;
+};
+
+//--------------------------------------------------------------------------
+// Initialize the plugin.
+static plugmod_t *idaapi init(void)
+{
+	if (!init_hexrays_plugin())
+		return nullptr; // no decompiler
+
+	install_hexrays_callback(callback, NULL);
+	hook_to_notification_point(HT_IDB, ExpandAllBeforeChange, NULL);
+    hook_to_notification_point(HT_DBG, DisableBeforeDebug, NULL);
+  
+	hint = new cexpr_t(cot_str, NULL);
+	hint->string = (char *)"{...} // double click right area to expand.";
+
+	msg("=== BlockViewer plugin by jhftss loaded. :) ===\n");
+	return new plugin_ctx_t;
 }
 
 //--------------------------------------------------------------------------
-#ifdef __IDA7__
-bool idaapi run(size_t)
-#else
-void idaapi run(int)
-#endif
+bool idaapi plugin_ctx_t::run(size_t)
 {
 	func_t *pfn = get_func(get_screen_ea());
     if (pfn)
     {
-#ifdef __IDA7__
         int code = ask_buttons("~S~tart", "~E~nd", "~C~ancel", -1, "Jump to function start or end ?");
         switch (code)
         {
@@ -315,38 +285,20 @@ void idaapi run(int)
             jumpto(pfn->start_ea);
             break;
         }
-#else
-        int code = askbuttons_c("~S~tart", "~E~nd", "~C~ancel", -1, "Jump to function start or end ?");
-        switch (code)
-        {
-        case -1:    // cancel
-            break;
-        case 0:     // end
-            jumpto(pfn->endEA);
-            break;
-        case 1:     // start
-            jumpto(pfn->startEA);
-            break;
-        }
-#endif        
     }
 
-#ifdef __IDA7__
     return true;
-#endif	
 }
 
 plugin_t PLUGIN =
 {
-  IDP_INTERFACE_VERSION,
-  0,          // plugin flags
-  init,                 // initialize
-  term,                 // terminate. this pointer may be NULL.
-  run,                  // invoke plugin
-  "",              // long comment about the plugin
-						// it could appear in the status line
-						// or as a hint
-  "",                   // multiline help about the plugin
-  "CodeViewer", // the preferred short name of the plugin
-  "J"                    // the preferred hotkey to run the plugin
+    IDP_INTERFACE_VERSION,
+    PLUGIN_MULTI,         // The plugin can work with multiple idbs in parallel
+    init,                 // initialize
+    nullptr,
+    nullptr,
+    "Collapse and Uncollapse Code Block",              // long comment about the plugin
+    nullptr,              // multiline help about the plugin
+    "CodeViewer",         // the preferred short name of the plugin
+    "Ctrl-Shift-J"        // the preferred hotkey to run the plugin
 };
